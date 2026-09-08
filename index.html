@@ -20,6 +20,7 @@
   #setup p { font-size: 0.9rem; color: #555; margin-bottom: 14px; line-height: 1.5; }
   #setup input { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 0.95rem; margin-bottom: 12px; direction: ltr; text-align: left; }
   #error { display: none; background: #fdecea; border: 1px solid #f5c6c0; color: #a12622; border-radius: 8px; padding: 14px 16px; margin-bottom: 18px; font-size: 0.92rem; line-height: 1.6; }
+  #note { display: none; background: #eef4fb; border: 1px solid #cfdef0; color: #2c4a73; border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; font-size: 0.85rem; line-height: 1.6; }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
   .card { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.07); border-top: 4px solid #999; }
   .card .label { font-size: 0.85rem; color: #666; margin-bottom: 6px; }
@@ -61,6 +62,7 @@
   </div>
   <div id="dash" class="hidden">
     <div id="error"></div>
+    <div id="note"></div>
     <div id="updated"></div>
     <div class="cards" id="cards"></div>
     <div class="grid2">
@@ -84,15 +86,23 @@
 </main>
 <script>
 const LS_KEY = 'reimbDash.sheetLink';
+const DEFAULT_SHEET = 'https://docs.google.com/spreadsheets/d/1H8-VKJjO9dlVBLh41g9teLiI7f5-pfrBulfoQopbTJA/edit';
 const HEADERS = {date:'תאריך', child:'ילד', provider:'מטפל/ספק', receipt:'מספר קבלה/חשבונית', amount:'סכום קבלה', status:'סטטוס', refund:'סכום החזר', form:'מספר בקשה/טופס', notes:'הערות'};
+// Refund sources: dedicated tabs in the same spreadsheet. Names first, gid fallback.
+const TABS = {
+  main:    {names: ['מעקב החזרים'], gids: ['0'], expect: 'סכום קבלה'},
+  tforms:  {names: ['טפסי החזר שאושרו'], gids: ['1230796029'], expect: 'סכום החזר שאושר'},
+  mushlam: {names: ['תביעות מושלם לאו 04.09.26', 'תביעות מושלם לאו'], gids: ['1089820133'], expect: 'סכום חשבונית'}
+};
 let rawRows = [], colMap = {}, charts = {};
+let refundData = {tforms: null, mushlam: null};
 
 function getSheetId() {
-  const v = localStorage.getItem(LS_KEY) || '';
+  const v = localStorage.getItem(LS_KEY) || DEFAULT_SHEET;
   const m = v.match(/\/d\/([a-zA-Z0-9-_]+)/);
   return m ? m[1] : (v.match(/^[a-zA-Z0-9-_]{20,}$/) ? v : null);
 }
-function changeSheet() { document.getElementById('dash').classList.add('hidden'); document.getElementById('setup').classList.remove('hidden'); document.getElementById('sheetInput').value = localStorage.getItem(LS_KEY) || ''; }
+function changeSheet() { document.getElementById('dash').classList.add('hidden'); document.getElementById('setup').classList.remove('hidden'); document.getElementById('sheetInput').value = localStorage.getItem(LS_KEY) || DEFAULT_SHEET; }
 function saveSheet() {
   const v = document.getElementById('sheetInput').value.trim();
   if (!v) return;
@@ -112,8 +122,34 @@ function statusColor(s) {
   return '#888';
 }
 function fmt(n) { return (n || 0).toLocaleString('he-IL', {maximumFractionDigits: 0}) + ' ₪'; }
+function pct(a, b) { return b ? (Math.round(a / b * 1000) / 10) + '%' : '0%'; }
 function cellText(c) { if (!c) return ''; return (c.f != null ? String(c.f) : (c.v != null ? String(c.v) : '')); }
 function cellNum(c) { if (!c || c.v == null) return 0; const n = typeof c.v === 'number' ? c.v : parseFloat(String(c.v).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? 0 : n; }
+
+async function fetchTab(id, spec) {
+  const tries = [];
+  spec.names.forEach(n => tries.push('sheet=' + encodeURIComponent(n)));
+  spec.gids.forEach(g => tries.push('gid=' + g));
+  for (const t of tries) {
+    try {
+      const url = 'https://docs.google.com/spreadsheets/d/' + id + '/gviz/tq?tqx=out:json&headers=1&' + t + '&t=' + Date.now();
+      const txt = await (await fetch(url)).text();
+      const jsonStr = txt.substring(txt.indexOf('(', txt.indexOf('setResponse')) + 1, txt.lastIndexOf(')'));
+      const data = JSON.parse(jsonStr);
+      if (data.status !== 'ok') continue;
+      // gviz silently returns the FIRST sheet when a sheet name does not match - validate by header label
+      const labels = (data.table.cols || []).map(c => (c.label || '').trim());
+      if (spec.expect && !labels.includes(spec.expect)) continue;
+      return data.table;
+    } catch (e) { /* try next */ }
+  }
+  return null;
+}
+function labelMap(cols) {
+  const m = {};
+  (cols || []).forEach((c, i) => { const l = (c.label || '').trim(); if (l && m[l] == null) m[l] = i; });
+  return m;
+}
 
 async function loadData(force) {
   const id = getSheetId();
@@ -121,13 +157,16 @@ async function loadData(force) {
   err.style.display = 'none';
   if (!id) { changeSheet(); return; }
   try {
-    const url = 'https://docs.google.com/spreadsheets/d/' + id + '/gviz/tq?tqx=out:json&headers=1&t=' + Date.now();
-    const txt = await (await fetch(url)).text();
-    const jsonStr = txt.substring(txt.indexOf('(', txt.indexOf('setResponse')) + 1, txt.lastIndexOf(')'));
-    const data = JSON.parse(jsonStr);
-    if (data.status !== 'ok') throw new Error(data.errors ? data.errors.map(e => e.detailed_message || e.message).join('; ') : 'query failed');
-    buildMaps(data.table.cols);
-    rawRows = data.table.rows.map(r => rowToObj(r.c)).filter(r => r.date || r.provider || r.amount);
+    const mainTable = await fetchTab(id, TABS.main);
+    if (!mainTable) throw new Error('main tab not found');
+    buildMaps(mainTable.cols);
+    rawRows = mainTable.rows.map(r => rowToObj(r.c)).filter(r => r.date || r.provider || r.amount);
+    // refund-source tabs (best effort; dashboard still works without them)
+    refundData.tforms = null; refundData.mushlam = null;
+    const tfTable = await fetchTab(id, TABS.tforms);
+    if (tfTable) refundData.tforms = parseTforms(tfTable);
+    const muTable = await fetchTab(id, TABS.mushlam);
+    if (muTable) refundData.mushlam = parseMushlam(muTable);
     document.getElementById('updated').textContent = 'עודכן: ' + new Date().toLocaleString('he-IL') + ' | ' + rawRows.length + ' רשומות';
     renderAll();
   } catch (e) {
@@ -151,9 +190,45 @@ function rowToObj(cells) {
   }
   return o;
 }
+function parseTforms(table) {
+  const m = labelMap(table.cols);
+  const iChild = m['ילד'], iClaimed = m['סכום שנתבע'], iApproved = m['סכום החזר שאושר'], iForm = m['מספר טופס'];
+  const out = {forms: 0, claimed: 0, approved: 0, byChild: {}};
+  (table.rows || []).forEach(r => {
+    const c = r.c || [];
+    const form = iForm == null ? '' : cellText(c[iForm]).trim();
+    const child = iChild == null ? '' : cellText(c[iChild]).trim();
+    if (!form && !child) return; // skip empty/summary rows
+    const claimed = iClaimed == null ? 0 : cellNum(c[iClaimed]);
+    const approved = iApproved == null ? 0 : cellNum(c[iApproved]);
+    out.forms++; out.claimed += claimed; out.approved += approved;
+    const ch = child || 'לא צוין';
+    out.byChild[ch] = out.byChild[ch] || {claimed: 0, approved: 0, forms: 0};
+    out.byChild[ch].claimed += claimed; out.byChild[ch].approved += approved; out.byChild[ch].forms++;
+  });
+  return out;
+}
+function parseMushlam(table) {
+  const m = labelMap(table.cols);
+  const iClaim = m['מספר תביעה'], iStatus = m['סטטוס'], iInv = m['סכום חשבונית'], iRefund = m['סכום החזר'];
+  const out = {claims: 0, invoiced: 0, approved: 0, rejected: 0, pending: 0};
+  (table.rows || []).forEach(r => {
+    const c = r.c || [];
+    const claim = iClaim == null ? '' : cellText(c[iClaim]).trim();
+    if (!claim) return; // skip totals/note rows at the bottom of the tab
+    const st = iStatus == null ? '' : cellText(c[iStatus]);
+    const inv = iInv == null ? 0 : cellNum(c[iInv]);
+    const ref = iRefund == null ? 0 : cellNum(c[iRefund]);
+    out.claims++; out.invoiced += inv;
+    if (st.includes('נדח')) out.rejected += inv;
+    else if (st.includes('אושר')) out.approved += ref;
+    else out.pending += inv;
+  });
+  return out;
+}
 function renderAll() {
   const total = rawRows.reduce((s, r) => s + r.amountNum, 0);
-  const refunded = rawRows.reduce((s, r) => s + r.refundNum, 0);
+  const mainRefundCol = rawRows.reduce((s, r) => s + r.refundNum, 0);
   const byStatus = {}, byChild = {};
   rawRows.forEach(r => {
     const st = r.status || 'ללא סטטוס';
@@ -163,17 +238,48 @@ function renderAll() {
     byChild[ch] = byChild[ch] || {count: 0, sum: 0, refund: 0};
     byChild[ch].count++; byChild[ch].sum += r.amountNum; byChild[ch].refund += r.refundNum;
   });
+  // Refund actually received = approved T-forms + approved mushlam claims (per source tabs, not the partially filled main column)
+  const tf = refundData.tforms, mu = refundData.mushlam;
+  const tfApproved = tf ? tf.approved : 0;
+  const muApproved = mu ? mu.approved : 0;
+  const hasSources = !!(tf || mu);
+  const refunded = hasSources ? tfApproved + muApproved : mainRefundCol;
+  // per-child actual refunds
+  const refundByChild = {};
+  if (tf) Object.keys(tf.byChild).forEach(ch => {
+    refundByChild[ch] = (refundByChild[ch] || 0) + tf.byChild[ch].approved;
+  });
+  if (mu) refundByChild['לאו'] = (refundByChild['לאו'] || 0) + mu.approved; // mushlam tab is Lau's claims
+  if (!hasSources) Object.keys(byChild).forEach(ch => { refundByChild[ch] = byChild[ch].refund; });
+
   let cards = '<div class="card" style="border-top-color:#1f3a5f"><div class="label">סכום קבלות כולל</div><div class="amount">' + fmt(total) + '</div><div class="count">' + rawRows.length + ' רשומות</div></div>'
-    + '<div class="card" style="border-top-color:#2e7d32"><div class="label">סה״כ הוחזר</div><div class="amount">' + fmt(refunded) + '</div><div class="count">' + (total ? Math.round(refunded / total * 100) : 0) + '% מהסכום הכולל</div></div>';
+    + '<div class="card" style="border-top-color:#2e7d32"><div class="label">סה״כ הוחזר בפועל</div><div class="amount">' + fmt(refunded) + '</div><div class="count">' + pct(refunded, total) + ' מהסכום הכולל</div></div>';
+  if (tf) cards += '<div class="card" style="border-top-color:#1565c0"><div class="label">טפסי החזר שאושרו (סל)</div><div class="amount">' + fmt(tfApproved) + '</div><div class="count">' + tf.forms + ' טפסים | נתבע ' + fmt(tf.claimed) + '</div></div>';
+  if (mu) cards += '<div class="card" style="border-top-color:#00695c"><div class="label">תביעות מושלם לאו</div><div class="amount">' + fmt(muApproved) + '</div><div class="count">' + mu.claims + ' חלקי תביעה' + (mu.rejected ? ' | נדחו ' + fmt(mu.rejected) : '') + (mu.pending ? ' | בתהליך ' + fmt(mu.pending) : '') + '</div></div>';
+  Object.keys(byChild).sort().forEach(ch => {
+    const spent = byChild[ch].sum, got = refundByChild[ch] || 0;
+    cards += '<div class="card" style="border-top-color:#6a1b9a"><div class="label">' + esc(ch) + ' - אחוז החזר</div><div class="amount">' + pct(got, spent) + '</div><div class="count">הוחזר ' + fmt(got) + ' מתוך ' + fmt(spent) + '</div></div>';
+  });
   Object.keys(byStatus).sort((a, b) => byStatus[b].sum - byStatus[a].sum).forEach(st => {
     cards += '<div class="card" style="border-top-color:' + statusColor(st) + '"><div class="label">' + esc(st) + '</div><div class="amount">' + fmt(byStatus[st].sum) + '</div><div class="count">' + byStatus[st].count + ' רשומות' + (byStatus[st].refund ? ' | הוחזר ' + fmt(byStatus[st].refund) : '') + '</div></div>';
   });
   document.getElementById('cards').innerHTML = cards;
-  drawCharts(byStatus, byChild);
+
+  const note = document.getElementById('note');
+  if (hasSources) {
+    note.style.display = 'block';
+    note.innerHTML = 'מקור נתוני ההחזר: לשוניות "טפסי החזר שאושרו" ו"תביעות מושלם לאו" (ולא עמודת "סכום החזר" בלשונית הראשית, שמולאה חלקית - ' + fmt(mainRefundCol) + ' בלבד). '
+      + 'לשונית הזיכויים הרבעוניים אינה נספרת - אלו אותם כספים של טפסי ה-T בדיווח רבעוני של כללית (מניעת ספירה כפולה).'
+      + (mu ? '' : '');
+  } else {
+    note.style.display = 'block';
+    note.innerHTML = 'שים לב: לא נמצאו לשוניות "טפסי החזר שאושרו"/"תביעות מושלם לאו" בגיליון - החישוב מסתמך על עמודת "סכום החזר" בלשונית הראשית בלבד, שמולאה חלקית.';
+  }
+  drawCharts(byStatus, byChild, refundByChild);
   fillFilters(byStatus, byChild);
   renderTable();
 }
-function drawCharts(byStatus, byChild) {
+function drawCharts(byStatus, byChild, refundByChild) {
   Object.values(charts).forEach(c => c.destroy()); charts = {};
   const stKeys = Object.keys(byStatus);
   charts.status = new Chart(document.getElementById('statusChart'), {type: 'doughnut',
@@ -183,7 +289,7 @@ function drawCharts(byStatus, byChild) {
   charts.child = new Chart(document.getElementById('childChart'), {type: 'bar',
     data: {labels: chKeys, datasets: [
       {label: 'סכום קבלות', data: chKeys.map(k => byChild[k].sum), backgroundColor: '#1f3a5f'},
-      {label: 'הוחזר', data: chKeys.map(k => byChild[k].refund), backgroundColor: '#2e7d32'}]},
+      {label: 'הוחזר בפועל', data: chKeys.map(k => refundByChild[k] || 0), backgroundColor: '#2e7d32'}]},
     options: {maintainAspectRatio: false, plugins: {legend: {position: 'bottom', rtl: true, textDirection: 'rtl'}, tooltip: {rtl: true, textDirection: 'rtl', callbacks: {label: c => ' ' + c.dataset.label + ': ' + fmt(c.parsed.y)}}}, scales: {y: {ticks: {callback: v => v.toLocaleString('he-IL')}, reverse: false}, x: {reverse: true}}}});
 }
 function fillFilters(byStatus, byChild) {
