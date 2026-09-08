@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>דשבורד מעקב החזרים</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Segoe UI", Arial, sans-serif; background: #f0f2f5; color: #1c1e21; direction: rtl; }
+  header { background: #1f3a5f; color: #fff; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  header h1 { font-size: 1.3rem; font-weight: 600; }
+  header .actions { display: flex; gap: 8px; }
+  button { cursor: pointer; border: none; border-radius: 6px; padding: 8px 14px; font-size: 0.9rem; font-family: inherit; }
+  .btn-light { background: #fff; color: #1f3a5f; }
+  .btn-primary { background: #1f3a5f; color: #fff; }
+  main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 60px; }
+  #setup { max-width: 520px; margin: 80px auto; background: #fff; border-radius: 10px; padding: 28px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+  #setup h2 { font-size: 1.1rem; margin-bottom: 12px; }
+  #setup p { font-size: 0.9rem; color: #555; margin-bottom: 14px; line-height: 1.5; }
+  #setup input { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 0.95rem; margin-bottom: 12px; direction: ltr; text-align: left; }
+  #error { display: none; background: #fdecea; border: 1px solid #f5c6c0; color: #a12622; border-radius: 8px; padding: 14px 16px; margin-bottom: 18px; font-size: 0.92rem; line-height: 1.6; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .card { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.07); border-top: 4px solid #999; }
+  .card .label { font-size: 0.85rem; color: #666; margin-bottom: 6px; }
+  .card .amount { font-size: 1.4rem; font-weight: 700; }
+  .card .count { font-size: 0.8rem; color: #888; margin-top: 4px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
+  .panel { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 1px 4px rgba(0,0,0,.07); }
+  .panel h3 { font-size: 1rem; margin-bottom: 14px; color: #333; }
+  .chart-wrap { position: relative; height: 280px; }
+  .filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
+  .filters select { padding: 7px 10px; border: 1px solid #ccc; border-radius: 6px; font-family: inherit; font-size: 0.9rem; background: #fff; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th, td { padding: 9px 10px; text-align: right; border-bottom: 1px solid #eee; }
+  th { background: #f7f8fa; font-weight: 600; position: sticky; top: 0; white-space: nowrap; }
+  tbody tr:hover { background: #f7f9fc; }
+  .table-wrap { overflow-x: auto; max-height: 560px; overflow-y: auto; }
+  .chip { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 0.78rem; font-weight: 600; color: #fff; white-space: nowrap; }
+  .num { direction: ltr; unicode-bidi: embed; white-space: nowrap; }
+  .notes { max-width: 260px; font-size: 0.8rem; color: #555; }
+  #updated { font-size: 0.8rem; color: #888; margin-bottom: 12px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>דשבורד מעקב החזרים</h1>
+  <div class="actions">
+    <button class="btn-light" id="refreshBtn" onclick="loadData(true)">רענון</button>
+    <button class="btn-light" onclick="changeSheet()">שינוי קישור</button>
+  </div>
+</header>
+<main>
+  <div id="setup" class="hidden">
+    <h2>חיבור לגיליון</h2>
+    <p>הדביקו כאן קישור לגיליון Google עם נתוני ההחזרים. הגיליון חייב להיות משותף במצב "כל מי שיש לו את הקישור - צופה". הקישור נשמר בדפדפן זה בלבד.</p>
+    <input id="sheetInput" type="text" placeholder="https://docs.google.com/spreadsheets/d/...">
+    <button class="btn-primary" onclick="saveSheet()">שמירה וטעינה</button>
+  </div>
+  <div id="dash" class="hidden">
+    <div id="error"></div>
+    <div id="updated"></div>
+    <div class="cards" id="cards"></div>
+    <div class="grid2">
+      <div class="panel"><h3>חלוקת סכומים לפי סטטוס</h3><div class="chart-wrap"><canvas id="statusChart"></canvas></div></div>
+      <div class="panel"><h3>השוואה לפי ילד</h3><div class="chart-wrap"><canvas id="childChart"></canvas></div></div>
+    </div>
+    <div class="panel">
+      <h3>כל הרשומות</h3>
+      <div class="filters">
+        <select id="fChild"><option value="">כל הילדים</option></select>
+        <select id="fStatus"><option value="">כל הסטטוסים</option></select>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr id="theadRow"></tr></thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</main>
+<script>
+const LS_KEY = 'reimbDash.sheetLink';
+const HEADERS = {date:'תאריך', child:'ילד', provider:'מטפל/ספק', receipt:'מספר קבלה/חשבונית', amount:'סכום קבלה', status:'סטטוס', refund:'סכום החזר', form:'מספר בקשה/טופס', notes:'הערות'};
+let rawRows = [], colMap = {}, charts = {};
+
+function getSheetId() {
+  const v = localStorage.getItem(LS_KEY) || '';
+  const m = v.match(/\/d\/([a-zA-Z0-9-_]+)/);
+  return m ? m[1] : (v.match(/^[a-zA-Z0-9-_]{20,}$/) ? v : null);
+}
+function changeSheet() { document.getElementById('dash').classList.add('hidden'); document.getElementById('setup').classList.remove('hidden'); document.getElementById('sheetInput').value = localStorage.getItem(LS_KEY) || ''; }
+function saveSheet() {
+  const v = document.getElementById('sheetInput').value.trim();
+  if (!v) return;
+  localStorage.setItem(LS_KEY, v);
+  document.getElementById('setup').classList.add('hidden');
+  document.getElementById('dash').classList.remove('hidden');
+  loadData(true);
+}
+function statusColor(s) {
+  if (!s) return '#888';
+  if (s.includes('נדח')) return '#c0392b';
+  if (s.includes('חלקי')) return '#7cb342';
+  if (s.includes('התקבל')) return '#2e7d32';
+  if (s.includes('זיכוי')) return '#1565c0';
+  if (s.includes('ביטוח')) return '#607d8b';
+  if (s.includes('טרם') || s.includes('ממתין') || s.includes('הוגש')) return '#e08e0b';
+  return '#888';
+}
+function fmt(n) { return (n || 0).toLocaleString('he-IL', {maximumFractionDigits: 0}) + ' ₪'; }
+function cellText(c) { if (!c) return ''; return (c.f != null ? String(c.f) : (c.v != null ? String(c.v) : '')); }
+function cellNum(c) { if (!c || c.v == null) return 0; const n = typeof c.v === 'number' ? c.v : parseFloat(String(c.v).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? 0 : n; }
+
+async function loadData(force) {
+  const id = getSheetId();
+  const err = document.getElementById('error');
+  err.style.display = 'none';
+  if (!id) { changeSheet(); return; }
+  try {
+    const url = 'https://docs.google.com/spreadsheets/d/' + id + '/gviz/tq?tqx=out:json&headers=1&t=' + Date.now();
+    const txt = await (await fetch(url)).text();
+    const jsonStr = txt.substring(txt.indexOf('(', txt.indexOf('setResponse')) + 1, txt.lastIndexOf(')'));
+    const data = JSON.parse(jsonStr);
+    if (data.status !== 'ok') throw new Error(data.errors ? data.errors.map(e => e.detailed_message || e.message).join('; ') : 'query failed');
+    buildMaps(data.table.cols);
+    rawRows = data.table.rows.map(r => rowToObj(r.c)).filter(r => r.date || r.provider || r.amount);
+    document.getElementById('updated').textContent = 'עודכן: ' + new Date().toLocaleString('he-IL') + ' | ' + rawRows.length + ' רשומות';
+    renderAll();
+  } catch (e) {
+    err.style.display = 'block';
+    err.innerHTML = 'לא הצלחתי לטעון את הנתונים. בדקו שהקישור נכון ושהגיליון משותף במצב "כל מי שיש לו את הקישור - צופה".<br><span style="direction:ltr;unicode-bidi:embed;font-size:.8rem">' + String(e.message || e) + '</span>';
+  }
+}
+function buildMaps(cols) {
+  colMap = {};
+  cols.forEach((c, i) => {
+    const lbl = (c.label || '').trim();
+    for (const k in HEADERS) if (lbl === HEADERS[k]) colMap[k] = i;
+  });
+}
+function rowToObj(cells) {
+  const o = {};
+  for (const k in HEADERS) {
+    const i = colMap[k];
+    o[k] = i == null ? '' : cellText(cells[i]);
+    o[k + 'Num'] = i == null ? 0 : cellNum(cells[i]);
+  }
+  return o;
+}
+function renderAll() {
+  const total = rawRows.reduce((s, r) => s + r.amountNum, 0);
+  const refunded = rawRows.reduce((s, r) => s + r.refundNum, 0);
+  const byStatus = {}, byChild = {};
+  rawRows.forEach(r => {
+    const st = r.status || 'ללא סטטוס';
+    byStatus[st] = byStatus[st] || {count: 0, sum: 0, refund: 0};
+    byStatus[st].count++; byStatus[st].sum += r.amountNum; byStatus[st].refund += r.refundNum;
+    const ch = r.child || 'לא צוין';
+    byChild[ch] = byChild[ch] || {count: 0, sum: 0, refund: 0};
+    byChild[ch].count++; byChild[ch].sum += r.amountNum; byChild[ch].refund += r.refundNum;
+  });
+  let cards = '<div class="card" style="border-top-color:#1f3a5f"><div class="label">סכום קבלות כולל</div><div class="amount">' + fmt(total) + '</div><div class="count">' + rawRows.length + ' רשומות</div></div>'
+    + '<div class="card" style="border-top-color:#2e7d32"><div class="label">סה״כ הוחזר</div><div class="amount">' + fmt(refunded) + '</div><div class="count">' + (total ? Math.round(refunded / total * 100) : 0) + '% מהסכום הכולל</div></div>';
+  Object.keys(byStatus).sort((a, b) => byStatus[b].sum - byStatus[a].sum).forEach(st => {
+    cards += '<div class="card" style="border-top-color:' + statusColor(st) + '"><div class="label">' + esc(st) + '</div><div class="amount">' + fmt(byStatus[st].sum) + '</div><div class="count">' + byStatus[st].count + ' רשומות' + (byStatus[st].refund ? ' | הוחזר ' + fmt(byStatus[st].refund) : '') + '</div></div>';
+  });
+  document.getElementById('cards').innerHTML = cards;
+  drawCharts(byStatus, byChild);
+  fillFilters(byStatus, byChild);
+  renderTable();
+}
+function drawCharts(byStatus, byChild) {
+  Object.values(charts).forEach(c => c.destroy()); charts = {};
+  const stKeys = Object.keys(byStatus);
+  charts.status = new Chart(document.getElementById('statusChart'), {type: 'doughnut',
+    data: {labels: stKeys, datasets: [{data: stKeys.map(k => byStatus[k].sum), backgroundColor: stKeys.map(statusColor)}]},
+    options: {maintainAspectRatio: false, plugins: {legend: {position: 'bottom', rtl: true, textDirection: 'rtl', labels: {font: {size: 12}}}, tooltip: {rtl: true, textDirection: 'rtl', callbacks: {label: c => ' ' + c.label + ': ' + fmt(c.parsed)}}}}});
+  const chKeys = Object.keys(byChild);
+  charts.child = new Chart(document.getElementById('childChart'), {type: 'bar',
+    data: {labels: chKeys, datasets: [
+      {label: 'סכום קבלות', data: chKeys.map(k => byChild[k].sum), backgroundColor: '#1f3a5f'},
+      {label: 'הוחזר', data: chKeys.map(k => byChild[k].refund), backgroundColor: '#2e7d32'}]},
+    options: {maintainAspectRatio: false, plugins: {legend: {position: 'bottom', rtl: true, textDirection: 'rtl'}, tooltip: {rtl: true, textDirection: 'rtl', callbacks: {label: c => ' ' + c.dataset.label + ': ' + fmt(c.parsed.y)}}}, scales: {y: {ticks: {callback: v => v.toLocaleString('he-IL')}, reverse: false}, x: {reverse: true}}}});
+}
+function fillFilters(byStatus, byChild) {
+  const fs = document.getElementById('fStatus'), fc = document.getElementById('fChild');
+  const sv = fs.value, cv = fc.value;
+  fs.innerHTML = '<option value="">כל הסטטוסים</option>' + Object.keys(byStatus).sort().map(s => '<option>' + esc(s) + '</option>').join('');
+  fc.innerHTML = '<option value="">כל הילדים</option>' + Object.keys(byChild).sort().map(s => '<option>' + esc(s) + '</option>').join('');
+  fs.value = sv; fc.value = cv;
+}
+function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+function renderTable() {
+  const fc = document.getElementById('fChild').value, fs = document.getElementById('fStatus').value;
+  const rows = rawRows.filter(r => (!fc || (r.child || 'לא צוין') === fc) && (!fs || (r.status || 'ללא סטטוס') === fs));
+  rows.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  document.getElementById('theadRow').innerHTML = ['date','child','provider','receipt','amount','status','refund','form','notes'].map(k => '<th>' + HEADERS[k] + '</th>').join('');
+  document.getElementById('tbody').innerHTML = rows.map(r =>
+    '<tr><td class="num">' + esc(r.date) + '</td><td>' + esc(r.child) + '</td><td>' + esc(r.provider) + '</td><td>' + esc(r.receipt) + '</td>' +
+    '<td class="num">' + esc(r.amount) + '</td><td><span class="chip" style="background:' + statusColor(r.status) + '">' + esc(r.status || 'ללא') + '</span></td>' +
+    '<td class="num">' + esc(r.refund) + '</td><td class="num">' + esc(r.form) + '</td><td class="notes">' + esc(r.notes) + '</td></tr>').join('');
+}
+document.getElementById('fChild').addEventListener('change', renderTable);
+document.getElementById('fStatus').addEventListener('change', renderTable);
+if (getSheetId()) { document.getElementById('dash').classList.remove('hidden'); loadData(true); }
+else { changeSheet(); }
+</script>
+</body>
+</html>
