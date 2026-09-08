@@ -104,11 +104,11 @@ function saveSheet() {
 function statusColor(s) {
   if (!s) return '#888';
   if (s.includes('נדח')) return '#c0392b';
+  if (s.includes('טרם') || s.includes('ממתין') || s.includes('ממתינ') || s.includes('הוגש')) return '#e08e0b';
   if (s.includes('חלקי')) return '#7cb342';
-  if (s.includes('התקבל')) return '#2e7d32';
   if (s.includes('זיכוי')) return '#1565c0';
   if (s.includes('ביטוח')) return '#607d8b';
-  if (s.includes('טרם') || s.includes('ממתין') || s.includes('הוגש')) return '#e08e0b';
+  if (s.includes('התקבל')) return '#2e7d32';
   return '#888';
 }
 function fmt(n) { return (n || 0).toLocaleString('he-IL', {maximumFractionDigits: 0}) + ' ₪'; }
