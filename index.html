@@ -201,7 +201,7 @@ function statusColor(s) {
 function fmt(n) { return (n || 0).toLocaleString('he-IL', {maximumFractionDigits: 0}) + ' ₪'; }
 function pct(a, b) { return b ? (Math.round(a / b * 1000) / 10) + '%' : '0%'; }
 function cellText(c) { if (!c) return ''; return (c.f != null ? String(c.f) : (c.v != null ? String(c.v) : '')); }
-function cellNum(c) { if (!c || c.v == null) return 0; const n = typeof c.v === 'number' ? c.v : parseFloat(String(c.v).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? 0 : n; }
+function cellNum(c) { if (!c || c.v == null) return 0; if (typeof c.v === 'number') return c.v; const s = String(c.v).trim(); if (!/^[\u20AA\s\-0-9.,]+$/.test(s)) return 0; const n = parseFloat(s.replace(/[^0-9.\-]/g, '')); return isNaN(n) ? 0 : n; }
 function amtKey(n) { const r = Math.round((n || 0) * 100) / 100; return String(r); }
 function pad2(n) { return String(n).padStart(2, '0'); }
 function isoFromMailDate(s) { const d = new Date(s); return isNaN(d) ? (s || '') : d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
@@ -226,7 +226,7 @@ function toGvizTable(fVals, rVals) {
   const rows = [];
   for (let i = 1; i < Math.max(fVals.length, rVals.length); i++) {
     const fr = fVals[i] || [], rr = rVals[i] || [];
-    if (!fr.some(v => v !== '' && v != null) && !rr.some(v => v !== '' && v != null)) continue;
+    if (!fr.some(v => v !== '' && v != null) && !rr.some(v => v !== '' && v != null)) break; // gviz data region ends at the first blank row
     const c = [];
     for (let j = 0; j < cols.length; j++) {
       const v = rr[j], f = fr[j];
