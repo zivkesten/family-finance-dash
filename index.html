@@ -504,7 +504,7 @@ document.getElementById('tbody').addEventListener('click', function(e) {
 document.getElementById('fChild').addEventListener('change', renderTable);
 document.getElementById('fStatus').addEventListener('change', renderTable);
 document.getElementById('fSource').addEventListener('change', renderTable);
-if (getSheetId()) { initAuth(true); }
+if (getSheetId()) { showAuth(); initAuth(true); }
 else { changeSheet(); }
 </script>
 </body>
