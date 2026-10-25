@@ -152,25 +152,41 @@ function switchAccount() { if (tokenClient) tokenClient.requestAccessToken({prom
 function signOut() {
   if (accessToken) { try { google.accounts.oauth2.revoke(accessToken, function() {}); } catch (e) {} }
   accessToken = null; tokenExp = 0; sheetMeta = null;
+  loadGen++; // invalidate any in-flight load so it cannot repopulate after logout
+  EVIDENCE = {}; CONFIG = {}; rawRows = []; allRows = []; refundData = {tforms: null, mushlam: null}; activeCard = null;
+  Object.keys(CARD_FILTERS).forEach(k => delete CARD_FILTERS[k]);
+  Object.keys(charts).forEach(k => { try { charts[k].destroy(); } catch (e) {} });
+  charts = {};
+  ['theadRow', 'tbody', 'cards'].forEach(i => { const el = document.getElementById(i); if (el) el.innerHTML = ''; });
+  const noteEl = document.getElementById('note'); if (noteEl) noteEl.innerHTML = '';
+  const updEl = document.getElementById('updated'); if (updEl) updEl.textContent = '';
+  const fcEl = document.getElementById('fChild'); if (fcEl) fcEl.innerHTML = '<option value="">כל הילדים</option>';
+  const fsEl = document.getElementById('fStatus'); if (fsEl) fsEl.innerHTML = '<option value="">כל הסטטוסים</option>';
+  const afEl = document.getElementById('activeFilter'); if (afEl) afEl.classList.remove('show');
   showAuth();
 }
 const DEFAULT_SHEET = 'https://docs.google.com/spreadsheets/d/1H8-VKJjO9dlVBLh41g9teLiI7f5-pfrBulfoQopbTJA/edit';
 const HEADERS = {date:'תאריך', child:'ילד', provider:'מטפל/ספק', receipt:'מספר קבלה/חשבונית', amount:'סכום קבלה', status:'סטטוס', refund:'סכום החזר', form:'מספר בקשה/טופס', notes:'הערות'};
 // Evidence document mapping is no longer bundled in the public page. It lives in the
 // restricted 'ראיות' tab of the same spreadsheet and is loaded only after sign-in.
-let EVIDENCE = {};
+let EVIDENCE = {}, CONFIG = {}, loadGen = 0;
 async function loadEvidence() {
-  EVIDENCE = {};
+  EVIDENCE = {}; CONFIG = {};
   const props = await resolveTabs();
   if (!props.some(p => p.title === 'ראיות')) return;
   const res = await apiFetch('/values/' + encodeURIComponent("'ראיות'!A1:B2000") + '?valueRenderOption=FORMATTED_VALUE');
-  (res.values || []).forEach(row => { if (row[0] && row[1] && row[0] !== 'מפתח') EVIDENCE[String(row[0])] = String(row[1]); });
+  (res.values || []).forEach(row => {
+    if (!row[0] || !row[1] || row[0] === 'מפתח') return;
+    const k = String(row[0]);
+    if (k.indexOf('CONFIG|') === 0) CONFIG[k.slice(7)] = String(row[1]);
+    else EVIDENCE[k] = String(row[1]);
+  });
 }
 // Refund sources: dedicated tabs in the same spreadsheet. Names first, gid fallback.
 const TABS = {
   main:    {names: ['מעקב החזרים'], gids: ['0'], expect: 'סכום קבלה'},
   tforms:  {names: ['טפסי החזר שאושרו'], gids: ['1230796029'], expect: 'סכום החזר שאושר'},
-  mushlam: {names: ['תביעות מושלם לאו 04.09.26', 'תביעות מושלם לאו'], gids: ['1089820133'], expect: 'סכום חשבונית'}
+  mushlam: {names: ['תביעות מושלם'], gids: ['1089820133'], expect: 'סכום חשבונית'}
 };
 const SRC_LABEL = {main: 'קבלה', tform: 'טופס T', mushlam: 'מושלם'};
 let rawRows = [], colMap = {}, charts = {};
@@ -269,6 +285,7 @@ async function loadData(force) {
   if (!accessToken) { showAuth(); return; }
   if (Date.now() > tokenExp) { initAuth(true); return; }
   dash.classList.add('loading');
+  const gen = ++loadGen;
   try {
     const mainTable = await fetchTab(id, TABS.main);
     if (!mainTable) throw new Error('main tab not found');
@@ -277,15 +294,17 @@ async function loadData(force) {
     // refund-source tabs (best effort; dashboard still works without them)
     refundData.tforms = null; refundData.mushlam = null;
     const tfTable = await fetchTab(id, TABS.tforms);
-    if (tfTable) refundData.tforms = parseTforms(tfTable);
     const muTable = await fetchTab(id, TABS.mushlam);
+    try { await loadEvidence(); } catch (evErr) { if (evErr && evErr.code === 401) throw evErr; EVIDENCE = {}; CONFIG = {}; }
+    if (gen !== loadGen) { dash.classList.remove('loading'); return; } // signed out mid-load: do not repopulate
+    if (tfTable) refundData.tforms = parseTforms(tfTable);
     if (muTable) refundData.mushlam = parseMushlam(muTable);
-    await loadEvidence();
     buildAllRows();
     document.getElementById('updated').textContent = 'עודכן: ' + new Date().toLocaleString('he-IL') + ' | ' + allRows.length + ' רשומות';
     renderAll();
     dash.classList.remove('loading');
   } catch (e) {
+    if (gen !== loadGen) return; // signed out mid-load: stay on the gate
     dash.classList.remove('loading');
     if (e.code === 401) { accessToken = null; initAuth(true); return; }
     if (e.code === 403) { showAuth('החשבון המחובר אינו מורשה לצפות בגיליון זה. יש להיכנס עם החשבון המשותף המורשה.'); return; }
@@ -353,7 +372,7 @@ function parseMushlam(table) {
     else if (st.includes('אושר')) out.approved += ref;
     else out.pending += inv;
     out.rows.push({src: 'mushlam', date: isoFromILDate(iDate == null ? '' : cellText(c[iDate])),
-      child: 'לאו', provider: iProv == null ? '' : cellText(c[iProv]), receipt: '',
+      child: CONFIG['mushlam_child'] || 'לא צוין', provider: iProv == null ? '' : cellText(c[iProv]), receipt: '',
       amount: iInv == null ? '' : cellText(c[iInv]), amountNum: inv,
       status: st, refund: iRefund == null ? '' : cellText(c[iRefund]), refundNum: ref,
       form: claim + (part ? ' חלק ' + part : ''), notes: stParts.length > 1 ? stParts.slice(1).join('|').trim() : '', evKey: null});
@@ -406,7 +425,7 @@ function renderAll() {
   if (tf) Object.keys(tf.byChild).forEach(ch => {
     refundByChild[ch] = (refundByChild[ch] || 0) + tf.byChild[ch].approved;
   });
-  if (mu) refundByChild['לאו'] = (refundByChild['לאו'] || 0) + mu.approved; // mushlam tab is Lau's claims
+  if (mu) mu.rows.forEach(r => { if ((r.status || '').includes('אושר')) { const ch = r.child || 'לא צוין'; refundByChild[ch] = (refundByChild[ch] || 0) + r.refundNum; } }); // mushlam rows carry their child from post-auth config
   if (!hasSources) Object.keys(byChild).forEach(ch => { refundByChild[ch] = byChild[ch].refund; });
 
   // card filter definitions (rebuilt each render)
@@ -414,7 +433,7 @@ function renderAll() {
   CARD_FILTERS['total'] = {label: 'סכום קבלות כולל', fn: r => r.src === 'main'};
   CARD_FILTERS['refunded'] = {label: 'סה״כ הוחזר בפועל', fn: r => r.src === 'tform' || (r.src === 'mushlam' && (r.status || '').includes('אושר'))};
   if (tf) CARD_FILTERS['tforms'] = {label: 'טפסי החזר שאושרו (סל)', fn: r => r.src === 'tform'};
-  if (mu) CARD_FILTERS['mushlam'] = {label: 'תביעות מושלם לאו', fn: r => r.src === 'mushlam'};
+  if (mu) CARD_FILTERS['mushlam'] = {label: 'תביעות מושלם', fn: r => r.src === 'mushlam'};
   Object.keys(byChild).sort().forEach(ch => {
     CARD_FILTERS['child:' + ch] = {label: 'רשומות של ' + ch, fn: r => (r.child || 'לא צוין') === ch};
   });
@@ -426,7 +445,7 @@ function renderAll() {
   let cards = '<div class="card" data-card-id="total" onclick="cardClick(\'total\')" style="border-top-color:#1f3a5f"><div class="label">סכום קבלות כולל</div><div class="amount">' + fmt(total) + '</div><div class="count">' + rawRows.length + ' רשומות</div></div>'
     + '<div class="card" data-card-id="refunded" onclick="cardClick(\'refunded\')" style="border-top-color:#2e7d32"><div class="label">סה״כ הוחזר בפועל</div><div class="amount">' + fmt(refunded) + '</div><div class="count">' + pct(refunded, total) + ' מהסכום הכולל</div></div>';
   if (tf) cards += '<div class="card" data-card-id="tforms" onclick="cardClick(\'tforms\')" style="border-top-color:#1565c0"><div class="label">טפסי החזר שאושרו (סל)</div><div class="amount">' + fmt(tfApproved) + '</div><div class="count">' + tf.forms + ' טפסים | נתבע ' + fmt(tf.claimed) + '</div></div>';
-  if (mu) cards += '<div class="card" data-card-id="mushlam" onclick="cardClick(\'mushlam\')" style="border-top-color:#00695c"><div class="label">תביעות מושלם לאו</div><div class="amount">' + fmt(muApproved) + '</div><div class="count">' + mu.claims + ' חלקי תביעה' + (mu.rejected ? ' | נדחו ' + fmt(mu.rejected) : '') + (mu.pending ? ' | בתהליך ' + fmt(mu.pending) : '') + '</div></div>';
+  if (mu) cards += '<div class="card" data-card-id="mushlam" onclick="cardClick(\'mushlam\')" style="border-top-color:#00695c"><div class="label">תביעות מושלם</div><div class="amount">' + fmt(muApproved) + '</div><div class="count">' + mu.claims + ' חלקי תביעה' + (mu.rejected ? ' | נדחו ' + fmt(mu.rejected) : '') + (mu.pending ? ' | בתהליך ' + fmt(mu.pending) : '') + '</div></div>';
   Object.keys(byChild).sort().forEach(ch => {
     const spent = byChild[ch].sum, got = refundByChild[ch] || 0;
     cards += '<div class="card" data-card-id="child:' + esc(ch) + '" onclick="cardClick(\'child:' + esc(ch) + '\')" style="border-top-color:#6a1b9a"><div class="label">' + esc(ch) + ' - אחוז החזר</div><div class="amount">' + pct(got, spent) + '</div><div class="count">הוחזר ' + fmt(got) + ' מתוך ' + fmt(spent) + '</div></div>';
@@ -447,12 +466,12 @@ function renderAll() {
   const note = document.getElementById('note');
   if (hasSources) {
     note.style.display = 'block';
-    note.innerHTML = 'מקור נתוני ההחזר: לשוניות "טפסי החזר שאושרו" ו"תביעות מושלם לאו" (ולא עמודת "סכום החזר" בלשונית הראשית, שמולאה חלקית - ' + fmt(mainRefundCol) + ' בלבד). '
+    note.innerHTML = 'מקור נתוני ההחזר: לשוניות "טפסי החזר שאושרו" ו"תביעות מושלם" (ולא עמודת "סכום החזר" בלשונית הראשית, שמולאה חלקית - ' + fmt(mainRefundCol) + ' בלבד). '
       + 'לשונית הזיכויים הרבעוניים אינה נספרת - אלו אותם כספים של טפסי ה-T בדיווח רבעוני של כללית (מניעת ספירה כפולה). '
       + 'לחיצה על כרטיס מסננת את הטבלה לרשומות שהוא מצרף; לחיצה על שורה פותחת את מסמך הראיה.';
   } else {
     note.style.display = 'block';
-    note.innerHTML = 'שים לב: לא נמצאו לשוניות "טפסי החזר שאושרו"/"תביעות מושלם לאו" בגיליון - החישוב מסתמך על עמודת "סכום החזר" בלשונית הראשית בלבד, שמולאה חלקית.';
+    note.innerHTML = 'שים לב: לא נמצאו לשוניות "טפסי החזר שאושרו"/"תביעות מושלם" בגיליון - החישוב מסתמך על עמודת "סכום החזר" בלשונית הראשית בלבד, שמולאה חלקית.';
   }
   drawCharts(byStatus, byChild, refundByChild);
   fillFilters(byStatus, byChild);
