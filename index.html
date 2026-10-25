@@ -153,7 +153,7 @@ function signOut() {
   if (accessToken) { try { google.accounts.oauth2.revoke(accessToken, function() {}); } catch (e) {} }
   accessToken = null; tokenExp = 0; sheetMeta = null;
   loadGen++; // invalidate any in-flight load so it cannot repopulate after logout
-  EVIDENCE = {}; CONFIG = {}; rawRows = []; allRows = []; refundData = {tforms: null, mushlam: null}; activeCard = null;
+  EVIDENCE = {}; CONFIG = {}; rawRows = []; allRows = []; refundData = {tforms: null, mushlam: null}; activeCard = null; evidenceFailed = false; configMissing = false;
   Object.keys(CARD_FILTERS).forEach(k => delete CARD_FILTERS[k]);
   Object.keys(charts).forEach(k => { try { charts[k].destroy(); } catch (e) {} });
   charts = {};
@@ -169,18 +169,20 @@ const DEFAULT_SHEET = 'https://docs.google.com/spreadsheets/d/1H8-VKJjO9dlVBLh41
 const HEADERS = {date:'תאריך', child:'ילד', provider:'מטפל/ספק', receipt:'מספר קבלה/חשבונית', amount:'סכום קבלה', status:'סטטוס', refund:'סכום החזר', form:'מספר בקשה/טופס', notes:'הערות'};
 // Evidence document mapping is no longer bundled in the public page. It lives in the
 // restricted 'ראיות' tab of the same spreadsheet and is loaded only after sign-in.
-let EVIDENCE = {}, CONFIG = {}, loadGen = 0;
-async function loadEvidence() {
-  EVIDENCE = {}; CONFIG = {};
+let EVIDENCE = {}, CONFIG = {}, loadGen = 0, evidenceFailed = false, configMissing = false;
+async function fetchEvidence() {
+  const out = {evidence: {}, config: {}, found: false};
   const props = await resolveTabs();
-  if (!props.some(p => p.title === 'ראיות')) return;
+  if (!props.some(p => p.title === 'ראיות')) return out;
   const res = await apiFetch('/values/' + encodeURIComponent("'ראיות'!A1:B2000") + '?valueRenderOption=FORMATTED_VALUE');
   (res.values || []).forEach(row => {
     if (!row[0] || !row[1] || row[0] === 'מפתח') return;
     const k = String(row[0]);
-    if (k.indexOf('CONFIG|') === 0) CONFIG[k.slice(7)] = String(row[1]);
-    else EVIDENCE[k] = String(row[1]);
+    if (k.indexOf('CONFIG|') === 0) out.config[k.slice(7)] = String(row[1]);
+    else out.evidence[k] = String(row[1]);
   });
+  out.found = true;
+  return out;
 }
 // Refund sources: dedicated tabs in the same spreadsheet. Names first, gid fallback.
 const TABS = {
@@ -289,16 +291,20 @@ async function loadData(force) {
   try {
     const mainTable = await fetchTab(id, TABS.main);
     if (!mainTable) throw new Error('main tab not found');
-    buildMaps(mainTable.cols);
-    rawRows = mainTable.rows.map(r => rowToObj(r.c)).filter(r => r.date || r.provider || r.amount);
     // refund-source tabs (best effort; dashboard still works without them)
-    refundData.tforms = null; refundData.mushlam = null;
     const tfTable = await fetchTab(id, TABS.tforms);
     const muTable = await fetchTab(id, TABS.mushlam);
-    try { await loadEvidence(); } catch (evErr) { if (evErr && evErr.code === 401) throw evErr; EVIDENCE = {}; CONFIG = {}; }
-    if (gen !== loadGen) { dash.classList.remove('loading'); return; } // signed out mid-load: do not repopulate
-    if (tfTable) refundData.tforms = parseTforms(tfTable);
-    if (muTable) refundData.mushlam = parseMushlam(muTable);
+    let stagedEv = {evidence: {}, config: {}, found: false}, stagedEvFailed = false;
+    try { stagedEv = await fetchEvidence(); stagedEvFailed = !stagedEv.found; }
+    catch (evErr) { if (evErr && evErr.code === 401) throw evErr; stagedEvFailed = true; }
+    if (gen !== loadGen) { dash.classList.remove('loading'); return; } // signed out mid-load: commit nothing
+    buildMaps(mainTable.cols);
+    rawRows = mainTable.rows.map(r => rowToObj(r.c)).filter(r => r.date || r.provider || r.amount);
+    EVIDENCE = stagedEv.evidence; CONFIG = stagedEv.config;
+    evidenceFailed = stagedEvFailed;
+    configMissing = !!muTable && !CONFIG['mushlam_child'];
+    refundData.tforms = tfTable ? parseTforms(tfTable) : null;
+    refundData.mushlam = muTable ? parseMushlam(muTable) : null;
     buildAllRows();
     document.getElementById('updated').textContent = 'עודכן: ' + new Date().toLocaleString('he-IL') + ' | ' + allRows.length + ' רשומות';
     renderAll();
@@ -472,6 +478,13 @@ function renderAll() {
   } else {
     note.style.display = 'block';
     note.innerHTML = 'שים לב: לא נמצאו לשוניות "טפסי החזר שאושרו"/"תביעות מושלם" בגיליון - החישוב מסתמך על עמודת "סכום החזר" בלשונית הראשית בלבד, שמולאה חלקית.';
+  }
+  if (evidenceFailed || configMissing) {
+    let warn = '<b>שים לב:</b> ';
+    if (evidenceFailed) warn += 'לא הצלחתי לטעון את לשונית הראיות מהגיליון - קישורי המסמכים אינם מוצגים כרגע. ';
+    if (configMissing) warn += 'חסר מפתח ההגדרות בלשונית הראיות - תביעות מושלם משוייכות זמנית ל"לא צוין". ';
+    note.style.display = 'block';
+    note.innerHTML = warn + '<br>' + note.innerHTML;
   }
   drawCharts(byStatus, byChild, refundByChild);
   fillFilters(byStatus, byChild);
