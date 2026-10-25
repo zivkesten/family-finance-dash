@@ -1,12 +1,14 @@
 # family-finance-dash
 
-Hebrew (RTL) single-page dashboard that visualizes data from a shared Google Sheet.
+Hebrew (RTL) single-page dashboard that visualizes data from a restricted Google Sheet.
 
 ## How it works
 
 - Plain HTML/JS, no build step. Chart.js is loaded from a CDN.
-- On first visit the page asks for a Google Sheet link. The link is stored in the browser's localStorage only - nothing is hardcoded in this repo and no data is stored anywhere but the sheet itself.
-- Data is read through the sheet's public gviz JSON endpoint, so the sheet must be shared as "Anyone with the link - Viewer".
+- Access is restricted: the page requires sign-in with Google, and only the authorized account can read the sheet. Data is loaded through the Google Sheets API (v4) after sign-in.
+- The sheet is NOT public. Keep it shared with the authorized account only - never switch it to "Anyone with the link".
+- The sheet link is stored in the browser's localStorage only; no data is stored anywhere but the sheet itself.
+- Evidence document links and private labels live in restricted sheet tabs and are loaded only after sign-in; they are not part of this repository.
 
 ## Sheet format
 
